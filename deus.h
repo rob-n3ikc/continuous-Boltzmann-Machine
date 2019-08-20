@@ -16,6 +16,25 @@
 #include <cmath>
 #include <vector>
 
+class orthog{
+
+public:// easier if the basis is public 
+float **basis; 
+float **expansion; 
+float *normalize;
+float *working_expansion;
+int closest;
+
+int nbasis;
+int size;
+int nhidden;
+orthog(int,int,int);
+~orthog();
+bool build( float (*)(int,float)); // call back to the functional form 
+int select( float *);
+}; // end of orthog class definition
+
+
 class RBM{
 public: // don't really need to hide anything in this class
 float *hidden, *visible, *U ,*gradH, *gradV;
@@ -28,16 +47,23 @@ RBM( int,int);
 ~RBM();
 
 void train( float *,int, float,float); 
+void train( float *,int, float,float,float); 
+void train( float *,int, float,float,float, orthog *); 
+void random_init(int);
 void graham_schmidt();
 
 void set_H_values( float *,int);
+void set_H_values( float *,int, orthog*);
 
 float reconstruct(float *, int);
+float reconstruct(float *, int, orthog*);
 float score(float *, int);
 float* energy(float *,int); // returns U
 float dot(float*,float*,int); // utility function
 
 }; //end of class RBM definition
+
+
 
 class Kmeans{
 public:

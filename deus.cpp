@@ -1,5 +1,14 @@
 #include "deus.h"
 
+float chebyshev( int n, float x)
+{
+// x in range -1 to 1
+// build generates 0 to 1
+// adjust range
+	x = x+x -1.F;
+	return cos( n * acos(x) );
+}
+
 RBM::RBM(int nv, int nh)
 {
     nhid = nh; nvis = nv; // shadows
@@ -96,6 +105,138 @@ void RBM::train( float *data, int ds, float beta, float learning_rate)
 		}//i
 	}//j
 } // train
+
+void RBM::train( float *data, int ds, float beta, float learning_rate, float forget)
+{
+       if( !all_initialized)
+	{
+          for( int i=0; i< nhid; i++)
+		if( !initialized[i])
+		{
+			initialized[i] = true;
+                        float *w;
+			w = layers[i];
+#define use_data
+#ifdef use_data
+                        for( int j=0; j< nvis; j++)
+				w[j] = data[j];	
+#else
+                      for( int j=0; j< nvis; j++)
+				w[j] =  0.0F;	
+		      w[i%nvis] = 1.0F;
+#endif
+	//		   w[i%nvis] = 1.0F;
+	//		   w[(i+1)%nvis] = 1.0F;
+			return ;
+		}
+	   all_initialized = true; // don't get here until everyone is initialized.
+	}
+        set_H_values( data,ds);
+
+#define expected_value
+#ifdef expected_value
+	float eup, edown, emid;
+// figure out the expected value of dw
+	eup = edown = emid = 0.0F;
+/*
+        for( int j = 0; j< nhid; j++)
+	{
+		float *row;
+		row = layers[j];
+		for( int i=0; i< nvis; i++)
+		{
+			float dw;
+			dw = hidden[j]*data[i]*learning_rate;
+			emid += row[i]*data[i]*hidden[j];
+			eup += (row[i]+dw)*data[i]*hidden[j];
+			edown += (row[i]-dw)*data[i]*hidden[j];
+		}//i
+	}//j
+*/
+
+// the magic here is an integral over the degrees of freedom.
+                float Z,dP;
+		Z = exp(-beta*emid)+exp(-beta*eup) + exp(-beta*edown);
+		dP = 3.0F*exp(-beta*eup)/Z ; // 3. normalizes it
+                learning_rate = learning_rate*(1.0F - dP);
+#endif
+	for( int j=0; j< nhid; j++)
+	{
+		float *row;
+		row = layers[j];
+		for( int i=0; i< nvis; i++)
+		{
+			float dw;
+			dw = hidden[j]*data[i]*learning_rate -row[i]*forget;
+ 
+			row[i] += dw;
+		}//i
+	}//j
+} // train
+
+
+
+
+
+
+void RBM::train( float *data, int ds, float beta, float learning_rate, float forget, orthog *basis)
+{
+#ifdef use_initialization_with_orthog
+       if( !all_initialized)
+	{
+          for( int i=0; i< basis->nhidden; i++)
+		if( !initialized[i])
+		{
+			initialized[i] = true;
+                        float *w;
+		//	w = layers[i];
+// expansion has the saved expansions nhidden many of them
+			w = basis->expansion[i];
+// old definition
+/*
+                        for( int j=0; j< nvis; j++)
+				w[j] = data[j];	
+*/
+			for( int j=0; j < basis->nbasis; j++)
+				w[j] =  dot(data, basis->basis[j], nvis)/basis->normalize[j];
+			return ;
+		}
+	   all_initialized = true; // don't get here until everyone is initialized.
+	}
+#endif
+// set_H_values does the expansion and sets up gradH
+        set_H_values( data,ds,basis);
+
+#define expected_value
+#ifdef expected_value
+	float eup, edown, emid;
+// figure out the expected value of dw
+	eup = edown = emid = 0.0F;
+	float *row;
+	row = basis->expansion[basis->closest];
+	for( int i=0; i<nhid ; i++)
+	{
+		float dw;
+		dw = gradH[i]*learning_rate;
+		emid += basis->working_expansion[i]*row[i];
+		edown += basis->working_expansion[i]*(row[i]-dw);
+		eup += basis->working_expansion[i]*(row[i]+dw);
+	}//i
+// the magic here is an integral over the degrees of freedom.
+                float Z,dP;
+		Z = exp(-beta*emid)+exp(-beta*eup) + exp(-beta*edown);
+		dP = 3.0F*exp(-beta*eup)/Z ; // 3. normalizes it
+                learning_rate = learning_rate*(1.0F - dP);
+#endif
+	for( int i=0; i< nhid; i++)
+	{
+		float dw;
+		dw = gradH[i]*learning_rate -row[i]*forget;
+		row[i] += dw;
+	}//i
+} // train
+
+
 
 // m is a row*row matrix, v the vector,s the solution, and toler
 // the criterion for solution.
@@ -195,6 +336,18 @@ int solve( float *matrix,float *vect,int irow,int ilead )
 }
 
 
+void RBM::set_H_values( float *data, int ds, orthog *basis)
+{
+	for(int i=0; i < basis->nbasis; i++)
+		basis->working_expansion[i] = dot(data, basis->basis[i], ds)/basis->normalize[i];
+	basis->closest = basis->select(basis->working_expansion);
+	float *b;
+	b = basis->expansion[basis->closest];
+	for( int i=0; i< basis->nbasis; i++)
+		gradH[i] = basis->working_expansion[i]-b[i];
+	
+}
+
 void RBM::set_H_values( float *data, int ds)
 {
 #define lsq
@@ -211,8 +364,9 @@ void RBM::set_H_values( float *data, int ds)
 		gradH[i] = 0.0F;
 	//	normal[i*nhid+i] = 100.0F; // Tikionov regularization
 //		normal[i*nhid+i] = 10.0F; // Tikionov regularization
-		normal[i*nhid+i] = 1.0F; // Tikionov regularization
-	//	normal[i*nhid+i] = 0.1F; // Tikionov regularization
+//STANDARD		normal[i*nhid+i] = 1.0F; // Tikionov regularization
+//		normal[i*nhid+i] = 0.001F; // Tikionov regularization
+		normal[i*nhid+i] = 0.1F; // Tikionov regularization
 	}
 // build the normal matrix.
 	for( int i = 0; i< nhid; i++)
@@ -430,6 +584,46 @@ float RBM::score(float *data, int ds)
 
 	return correlation(data,gradV,nvis);
 }
+
+
+
+float RBM::reconstruct( float *data, int ds, orthog *basis)
+{
+	set_H_values(data,ds,basis);
+//        for( int j=0; j< nhid; j++)
+//	printf("%f ",hidden[j]);
+//	printf("\n"); fflush(stdout);
+////        for( int j=0; j< nhid; j++)
+////		if( hidden[j] < 0.99) hidden[j] = 0.0F;
+
+	for(int i=0; i< nvis; i++)
+		gradV[i] = 0.0F;
+	float *row;
+	row = basis->expansion[basis->closest];
+	for( int j=0; j < basis->nbasis; j++)
+	{
+		float *b;
+		b = basis->basis[j];
+		for( int i=0; i< nvis; i++)
+		{
+		gradV[i] += b[i]*row[j];
+		}//i
+	}//j
+// gradient is calculated
+// estimate the step size;
+//	return correlation(data,gradV,nvis);
+	float ccoo,ccrr,ccro;
+	ccoo = ccrr = ccro = 0.0F;
+	
+//	return correlation(data,gradV,nvis);
+	ccoo = dot(data,data,nvis);
+	ccrr = dot(gradV,gradV,nvis);
+	ccro = dot(gradV,data,nvis);
+	return ccro/sqrt(ccoo*ccrr);
+//	return ccro*ccro/(ccoo*ccrr);
+}// reconstruct
+
+
 float RBM::reconstruct( float *data, int ds)
 {
 	set_H_values(data,ds);
@@ -461,6 +655,45 @@ float RBM::reconstruct( float *data, int ds)
 	return ccro/sqrt(ccoo*ccrr);
 //	return ccro*ccro/(ccoo*ccrr);
 }// reconstruct
+
+
+void RBM::random_init( int seed)
+{
+// the code from really_lame_rng
+float buff[55];
+float xva;
+int ip,jp,kp;
+for( ip=0; ip< 55; ip++)
+{
+// a lousy rng to initialize
+    seed = (seed*2349+14687)%32767;
+    buff[ip] = (float)seed/32767.0F;
+    while( buff[ip] > 1.F) buff[ip] -= 1.0F;
+    while( buff[ip] < 0.F) buff[ip] += 1.0F;
+}
+ip = 23; jp = 24; kp = 0;
+
+for( int ih = 0; ih < nhid; ih++)
+{
+	float *w;
+	w = layers[ih];
+	for( int iv = 0; iv < nvis; iv++)
+	{
+
+	xva = buff[jp]+buff[ip];
+	while( xva > 1.F) xva -= 1.F;
+	buff[kp] = xva;
+	ip = (ip+1)%55;
+	jp = (jp+1)%55;
+	kp = (kp+1)%55;
+	w[iv] = xva;
+	}
+	initialized[ih] = true;
+}
+
+}// end of random_init
+
+
 
 
 Kmeans::Kmeans( int nlong, int ns)
@@ -698,4 +931,94 @@ int Knn::category( float *data, int ds, int cat)
 	
 // improvement would be to do local average, but lets see how this works
 	return categories[imin];
+}
+
+
+// nb is the number of basis functions
+// n is the length of the basis function (nvis in the rbm)
+// nh is the number of expansion vectors (nhidden in the rbm)
+orthog::orthog(int nb, int n, int nh)
+{
+	size = n;
+	nbasis = nb;
+	nhidden = nh;
+	working_expansion = new float[nbasis];
+	basis = new float* [nbasis];
+	expansion = new float* [nhidden];
+	for( int i=0; i< nbasis; i++)
+		basis[i] = new float[size];
+	for( int i=0; i< nhidden; i++)
+		expansion[i] = new float[nbasis];
+	normalize = new float[nbasis];
+}
+
+
+orthog::~orthog()
+{
+	for( int i=0; i < nhidden; i++)
+		delete [] expansion[i];
+	for( int i=0; i < nbasis; i++)
+		delete [] basis[i];
+	delete [] expansion;
+	delete [] basis;
+	delete [] normalize;
+	delete [] working_expansion;
+}
+
+bool orthog::build( float (*f)(int , float ))
+{
+	for( int i=0; i < nbasis; i++)
+	{// for every row
+		float *row;
+		row = basis[i];
+		normalize[i] = 0.F;
+		for( int j=0; j< size; j++)
+		{
+// size -1 makes the range 0 to 1
+			row[j] = f(i, (float)j/(size-1));
+			normalize[i] += row[j]*row[j];
+		}
+	}//i
+	for( int i=0; i < nhidden; i++)
+	{
+		float *row;
+		row = expansion[i];
+		for( int j=0; j< nbasis; j++)
+		{
+			row[j] = 0.F;
+		}
+	}//i
+	return 1==1;
+}
+
+// test is an nbasis long vector
+int orthog::select( float *test)
+{
+	int ic;
+	float rc;
+	float ccd2;
+	ic = 0;
+	rc = -10.e10;
+	ccd2 = 0.F;
+	for( int i=0; i< nbasis; i++)
+		ccd2 += test[i]*test[i];
+	for( int i=0; i< nhidden; i++)
+	{
+		float *row;
+		float ccn,ccd1;
+		ccn = 0.F; ccd1 = 0.F;
+		row = expansion[i]; // expansion has the hidden layers
+		for( int j=0; j< nbasis; j++)
+		{
+			ccn += test[j]*row[j];
+			ccd1 += row[j]*row[j];
+		}//j
+		if( ccd1 < 1.e-7)
+			continue;
+		ccn = ccn *ccn/ccd1/ccd2;
+		if( ccn	 > rc)
+			{rc = ccn; ic = i;}
+	}//i
+	
+	return ic;
 }
